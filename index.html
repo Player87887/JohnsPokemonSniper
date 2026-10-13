@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>JohnsPokemonSniper</title>
+<meta name="description" content="Live voorraad van Pokémon TCG-producten bij NL/BE/DE-webshops.">
+<link rel="icon" type="image/png" href="assets/favicon.png">
+<link rel="apple-touch-icon" href="assets/apple-touch-icon.png">
+<meta name="theme-color" content="#07060c">
+<meta property="og:title" content="JohnsPokemonSniper">
+<meta property="og:description" content="Live voorraad van Pokémon TCG-producten bij NL/BE/DE-webshops.">
+<meta property="og:image" content="assets/logo.png">
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <img class="logo" src="assets/logo.png" alt="JohnsPokemonSniper logo" width="76" height="76">
+      <div class="names">
+        <div class="row"><h1>Johns<span class="p">Pokemon</span>Sniper</h1>
+          <span class="sub" id="brand-status">● laden…</span></div>
+        <span class="motto">Pokémon analysis <i>×</i> sniper tips</span>
+      </div>
+    </div>
+    <p class="tagline" style="margin-top:12px">Live voorraad van Pokémon TCG-producten bij Nederlandse, Belgische en Duitse webshops.
+      Meldingen komen direct binnen via Telegram; hier zie je het overzicht.</p>
+    <div class="meta-row">
+      <span><b>bijgewerkt:</b> <span id="meta-updated">—</span></span>
+      <span><b>shops:</b> <span id="meta-shops">—</span></span>
+      <span><b>producten:</b> <span id="meta-products">—</span></span>
+    </div>
+  </header>
+
+  <main>
+    <nav class="tabs" id="tabs">
+      <a class="tab" href="#home" data-tab="home">Home</a>
+      <a class="tab" href="#meldingen" data-tab="meldingen">Meldingen <span class="cnt" id="cnt-alerts"></span></a>
+      <a class="tab" href="#producten" data-tab="producten">Producten <span class="cnt" id="cnt-products"></span></a>
+      <a class="tab" href="#referentie" data-tab="referentie">Referentie <span class="cnt" id="cnt-refs"></span></a>
+      <a class="tab" href="#historie" data-tab="historie">Laagste prijzen</a>
+    </nav>
+
+    <section id="view-home" class="view" hidden></section>
+    <section id="view-meldingen" class="view" hidden></section>
+    <section id="view-producten" class="view" hidden></section>
+    <section id="view-referentie" class="view" hidden></section>
+    <section id="view-historie" class="view" hidden></section>
+  </main>
+
+  <footer>
+    <p>Prijzen en voorraad komen rechtstreeks van de webshops en kunnen achterlopen; check altijd de shop zelf.
+      Geen affiliate-links. <span id="foot-version"></span></p>
+  </footer>
+
+  <script src="assets/config.js"></script>
+  <script src="assets/app.js"></script>
+</body>
+</html>
