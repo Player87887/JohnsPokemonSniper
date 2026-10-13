@@ -16,7 +16,7 @@
   }
   const RI = repoInfo();
   const DEMO_MODE = DEMO || !RI.owner || !RI.repo;     // geen repository bekend: voorbeeldgegevens tonen
-  async function getJSON(file, fresh) {
+  async function getJSON(file, fresh, branch = RI.branch) {
     if (DEMO_MODE) {
       const r = await fetch(`demo/${file}?t=${Date.now()}`, { cache: "no-store" });
       if (!r.ok) throw new Error(`${file}: ${r.status}`);
@@ -25,12 +25,12 @@
     // status (online/offline) via de GitHub-API: altijd vers. Lukt dat niet (bv. limiet), dan via raw (max. 5 min oud).
     if (fresh) {
       try {
-        const r = await fetch(`https://api.github.com/repos/${RI.owner}/${RI.repo}/contents/${file}?ref=${RI.branch}`,
+        const r = await fetch(`https://api.github.com/repos/${RI.owner}/${RI.repo}/contents/${file}?ref=${branch}`,
                               { headers: { Accept: "application/vnd.github.raw+json" }, cache: "no-store" });
         if (r.ok) return r.json();
       } catch (e) { /* val terug op raw */ }
     }
-    const r = await fetch(`https://raw.githubusercontent.com/${RI.owner}/${RI.repo}/${RI.branch}/${file}?t=${Date.now()}`,
+    const r = await fetch(`https://raw.githubusercontent.com/${RI.owner}/${RI.repo}/${branch}/${file}?t=${Date.now()}`,
                           { cache: "no-store" });
     if (!r.ok) throw new Error(`${file}: ${r.status}`);
     return r.json();
@@ -99,25 +99,105 @@
   const histKey = (set, product) => `${set}|${product}`;
   let HIST = new Map();
 
+  // De server publiceert naar de tak 'data', de laptop naar 'data-laptop'. De site voegt ze samen:
+  // elke shop komt van de plek waar hij draait, meldingen en prijzen van beide.
+  const BRANCHES = DEMO_MODE ? [RI.branch] : [RI.branch, `${RI.branch}-laptop`];
+  const SRC = BRANCHES.map((b) => ({ branch: b, status: null }));
+  const srcLimit = (st) => (st.interval_min || 3) * 60 * 2 + 360;   // 2 hartslagen gemist + cache van GitHub
+  const srcLive = (st) => !!st && st.online && nowSec() - (st.heartbeat || 0) <= srcLimit(st);
+  function mergeStatus() {
+    const got = SRC.filter((x) => x.status);
+    if (!got.length) { S.status = null; return; }
+    const lives = got.filter((x) => srcLive(x.status));
+    const main = (lives.find((x) => x.status.mode === "server") || lives[0]
+                  || got.slice().sort((a, b) => (b.status.heartbeat || 0) - (a.status.heartbeat || 0))[0]).status;
+    const st = Object.assign({}, main);
+    st.heartbeat = Math.max(...got.map((x) => x.status.heartbeat || 0));
+    st.online = got.some((x) => x.status.online && srcLive(x.status)) || (!lives.length && main.online);
+    st.monitoring = lives.some((x) => x.status.monitoring);
+    const shops = new Map();
+    // eerst de shops van plekken die nu draaien en de shop aan hebben, dan de rest als 'uit'
+    [...lives, ...got.filter((x) => !lives.includes(x))].forEach((x) => (x.status.shops || []).forEach((sh) => {
+      const cur = shops.get(sh.name);
+      const mine = Object.assign({}, sh, { place: x.status.mode === "server" ? "server" : "laptop",
+                                           enabled: !!sh.enabled && srcLive(x.status) || (!lives.length && !!sh.enabled) });
+      if (!cur || (!cur.enabled && mine.enabled)) shops.set(sh.name, mine);
+    }));
+    st.shops = [...shops.values()];
+    const sets = new Map();
+    got.forEach((x) => (x.status.sets || []).forEach((z) => sets.has(z.name) || sets.set(z.name, z)));
+    st.sets = [...sets.values()];
+    st.parts = lives.map((x) => ({ place: x.status.mode === "server" ? "server" : "laptop",
+                                   n: (x.status.shops || []).filter((z) => z.enabled).length,
+                                   monitoring: x.status.monitoring }));
+    st._lives = lives.map((x) => x.branch);
+    S.status = st;
+  }
   async function loadStatus() {
-    try {
-      S.status = await getJSON("status.json", true); S.err = "";
-      if (DEMO_MODE && S.status) {                       // voorbeeldgegevens: altijd 'online' tonen
-        S.status.heartbeat = Math.round(nowSec()) - 40;
-        S.status.started = new Date(Date.now() - 3.2 * 3600e3).toISOString();
-      }
+    const res = await Promise.allSettled(SRC.map((x) => getJSON("status.json", true, x.branch)));
+    res.forEach((r, i) => { if (r.status === "fulfilled") SRC[i].status = r.value; });
+    if (DEMO_MODE && SRC[0].status) {                     // voorbeeldgegevens: altijd 'online' tonen
+      SRC[0].status.heartbeat = Math.round(nowSec()) - 40;
+      SRC[0].status.started = new Date(Date.now() - 3.2 * 3600e3).toISOString();
     }
-    catch (e) { S.err = String(e.message || e); }
+    S.err = res.every((r) => r.status === "rejected") ? String(res[0].reason?.message || res[0].reason) : "";
+    mergeStatus();
   }
   async function loadData() {
-    const [p, a, h, r] = await Promise.allSettled([getJSON("products.json"), getJSON("alerts.json"), getJSON("history.json"),
-                                                   getJSON("refs.json")]);
-    if (r.status === "fulfilled") S.refs = r.value.items || [];
-    if (p.status === "fulfilled") S.products = p.value.products || [];
-    if (a.status === "fulfilled") S.alerts = a.value.alerts || [];
-    if (h.status === "fulfilled") {
-      S.history = h.value.items || [];
+    const files = ["products.json", "alerts.json", "history.json", "refs.json"];
+    const per = await Promise.all(SRC.map(async (x) => {
+      const r = await Promise.allSettled(files.map((f) => getJSON(f, false, x.branch)));
+      return r.map((y) => (y.status === "fulfilled" ? y.value : null));
+    }));
+    const lives = new Set(S.status?._lives || []);
+    const useSrc = (i) => !lives.size || lives.has(SRC[i].branch);   // niemand online: dan alles tonen
+    // producten: alleen van plekken die nu draaien; dubbele (shop draait op beide) één keer
+    const seen = new Set(), prods = [];
+    per.forEach(([p], i) => {
+      if (!p || !useSrc(i)) return;
+      (p.products || []).forEach((x) => { const k = `${x.shop}|${x.url}|${x.title}`; if (!seen.has(k)) { seen.add(k); prods.push(x); } });
+    });
+    if (per.some(([p]) => p)) S.products = prods;
+    // meldingen: van beide, op tijd
+    const al = new Map();
+    per.forEach(([, a]) => (a?.alerts || []).forEach((x) => al.set(`${x.t}|${x.shop}|${x.title}`, x)));
+    if (per.some(([, a]) => a)) S.alerts = [...al.values()].sort((a, b) => (b.t || "").localeCompare(a.t || ""));
+    // laagste ooit: per product de laagste van beide
+    const hm = new Map();
+    per.forEach(([, , h], i) => (h?.items || []).forEach((x) => {
+      const k = histKey(x.set, x.product), cur = hm.get(k);
+      const now = useSrc(i) ? x.now : null;
+      if (!cur) { hm.set(k, Object.assign({}, x, { now })); return; }
+      if (x.low && (!cur.low || x.low.price < cur.low.price)) cur.low = x.low;
+      if (now && (!cur.now || now.price < cur.now.price)) cur.now = now;
+      cur.shops_now = (cur.shops_now || 0) + (useSrc(i) ? (x.shops_now || 0) : 0);
+      if (typeof cur.ref !== "number") cur.ref = x.ref;
+    }));
+    if (per.some(([, , h]) => h)) {
+      S.history = [...hm.values()];
       HIST = new Map(S.history.map((x) => [histKey(x.set, x.product), x]));
+    }
+    // referentieprijzen: CardTrader-lijst van de verste bron; 'nu goedkoopst' opnieuw uit alle producten
+    const refSrc = per.map(([, , , r], i) => ({ r, i })).filter((x) => x.r)
+      .sort((a, b) => (b.r.items || []).length - (a.r.items || []).length || (SRC[b.i].status?.mode === "server") - (SRC[a.i].status?.mode === "server"))[0];
+    if (refSrc) {
+      const ever = new Map();
+      per.forEach(([, , , r]) => (r?.items || []).forEach((x) => {
+        if (x.ever && (!ever.has(x.id) || x.ever.price < ever.get(x.id).price)) ever.set(x.id, x.ever);
+      }));
+      const best = new Map();
+      S.products.forEach((p) => {
+        if (p.ct_id == null) return;
+        const b = best.get(p.ct_id) || { now: null, n_stock: 0, n_shops: 0 };
+        b.n_shops += 1;
+        if (p.stock === true && typeof p.price === "number" && p.price >= 1) {
+          b.n_stock += 1;
+          if (!b.now || p.price < b.now.price) b.now = { shop: p.shop, price: p.price, url: p.url };
+        }
+        best.set(p.ct_id, b);
+      });
+      S.refs = (refSrc.r.items || []).map((x) => Object.assign({}, x, best.get(x.id) || { now: null, n_stock: 0, n_shops: 0 },
+                                                                { ever: ever.get(x.id) || x.ever || null }));
     }
   }
 
@@ -132,7 +212,9 @@
     }
     if (!st.monitoring) return { cls: "paused", title: "Gepauzeerd", sub: "De app staat aan, maar de monitor is gestopt." };
     const n = (st.shops || []).filter((s) => s.enabled).length;
-    return { cls: "on", title: "Online", sub: `Controleert ${n} shops · draait al ${duration(st.started || st.updated)}.` };
+    const parts = (st.parts || []).filter((p) => p.monitoring && p.n);
+    const where = parts.length > 1 ? ` (${parts.map((p) => `${p.place} ${p.n}`).join(" · ")})` : "";
+    return { cls: "on", title: "Online", sub: `Controleert ${n} shops${where} · draait al ${duration(st.started || st.updated)}.` };
   }
 
   function renderHeader() {
@@ -223,7 +305,7 @@
         <div class="shops">${(st.shops || []).filter((s) => s.enabled).map((s) => `
           <div class="shop ${shopState(s)}"><span class="dot"></span><div>
             <div class="nm">${esc(s.name)}</div>
-            <div class="st">${s.products} producten · ${s.in_stock} op voorraad${s.method ? " · " + esc(s.method) : ""}</div></div></div>`).join("")}
+            <div class="st">${s.products} producten · ${s.in_stock} op voorraad${s.method ? " · " + esc(s.method) : ""}${(st.parts || []).length > 1 && s.place ? " · " + esc(s.place) : ""}</div></div></div>`).join("")}
         </div>`;
     },
   };
