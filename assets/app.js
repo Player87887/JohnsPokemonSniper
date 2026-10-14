@@ -87,7 +87,25 @@
                             s === false ? `<span class="pill out">uitverkocht</span>` : `<span class="pill unk">onbekend</span>`);
 
   // ---------- gegevens ----------
-  const S = { status: null, products: [], alerts: [], history: [], refs: [], err: "" };
+  const S = { status: null, products: [], alerts: [], history: [], refs: [], logs: [], logAt: 0, err: "" };
+  // verzendgegevens per shop (uit status.json van server en laptop)
+  const shipOf = (shop) => (S.status?.shops || []).find((x) => x.name === shop) || null;
+  const money = (n) => euro(n).replace(",00", "");
+  function shipShort(shop, price) {
+    const s = shipOf(shop);
+    if (!s) return "";
+    if (typeof s.ship_free === "number" && typeof price === "number" && price >= s.ship_free) return "gratis verzending";
+    if (typeof s.ship_cost === "number") return s.ship_cost === 0 ? "gratis verzending" : `+${euro(s.ship_cost)} verzending`;
+    return "verzending onbekend";
+  }
+  // voorraad nu van het product uit een (oude) melding
+  function stockNow(a) {
+    const p = S.products.find((x) => x.shop === a.shop && x.url === a.url)
+      || S.products.find((x) => x.shop === a.shop && x.title === a.title);
+    if (!p) return { cls: "unk", txt: "nu: niet meer gezien" };
+    return p.stock === true ? { cls: "in", txt: `nu: op voorraad${typeof p.price === "number" && p.price !== a.price ? " · " + euro(p.price) : ""}` }
+      : p.stock === false ? { cls: "out", txt: "nu: uitverkocht" } : { cls: "unk", txt: "nu: onbekend" };
+  }
   const setShort = (name) => {
     const x = (S.status?.sets || []).find((s) => s.name === name);
     return (x && x.short) || name || "—";
@@ -144,6 +162,7 @@
     mergeStatus();
   }
   async function loadData() {
+    loadLogs();
     const files = ["products.json", "alerts.json", "history.json", "refs.json"];
     const per = await Promise.all(SRC.map(async (x) => {
       const r = await Promise.allSettled(files.map((f) => getJSON(f, false, x.branch)));
@@ -235,7 +254,7 @@
   }
 
   // ---------- router ----------
-  const TABS = ["home", "meldingen", "producten", "referentie", "historie"];
+  const TABS = ["home", "meldingen", "producten", "referentie", "historie", "verzending", "logboek"];
   function route() {
     const [tab, query] = (location.hash.replace(/^#/, "") || "home").split("?");
     return { tab: TABS.includes(tab) ? tab : "home", params: new URLSearchParams(query || "") };
@@ -317,7 +336,8 @@
       <div class="time">${hhmm(a.t)}</div>
       <div class="what"><div class="t"><a href="${esc(safeUrl(a.url))}" target="_blank" rel="noopener">${esc(a.title)}</a></div>
         <div class="m"><span class="badge set">${esc(setShort(a.set))}</span><span class="badge">${esc(a.product || a.rule || "")}</span>
-          <span class="badge">${esc(a.shop)}</span><span class="pill ${oos ? "out" : isNew ? "new" : "in"}">${esc(a.reason)}</span></div></div>
+          <span class="badge">${esc(a.shop)}${(a.ship || shipShort(a.shop, a.price)) ? ` <span class="ship">(${esc(a.ship || shipShort(a.shop, a.price))})</span>` : ""}</span><span class="pill ${oos ? "out" : isNew ? "new" : "in"}">${esc(a.reason)}</span>
+          ${(() => { const n = stockNow(a); return `<span class="pill now ${n.cls}">${esc(n.txt)}</span>`; })()}</div></div>
       <div class="price"><span class="amt">${euro(a.price)}</span>${typeof a.ref === "number" ? `<span class="ref">ref ${euro(a.ref)}${a.ref_src === "CardTrader" ? " CT" : ""} ${diffHtml(a.price, a.ref, refLabel(a.ref_src), a.unsure)}</span>` : ""}</div>
     </div>`;
   }
@@ -496,7 +516,7 @@
         ${shown.map((p) => `<tr class="${p.stock === true ? "" : "dim"}">
           <td data-l=""><div class="ttl"><a href="${esc(safeUrl(p.url))}" target="_blank" rel="noopener">${esc(p.product)}</a> <span class="badge set">${esc(setShort(p.set))}</span></div>
               <div class="sub2" title="${esc(p.title)}">${esc(p.title)}</div></td>
-          <td data-l="shop">${esc(p.shop)}</td>
+          <td data-l="shop">${esc(p.shop)}${shipShort(p.shop, p.price) ? `<div class="sub2">${esc(shipShort(p.shop, p.price))}</div>` : ""}</td>
           <td class="num" data-l="prijs">${euro(p.price)}</td>
           <td data-l="voorraad">${stockPill(p.stock)}</td>
           <td class="num" data-l="t.o.v. ref">${diffHtml(p.price, p.ref, refLabel(p.ref_src || (p.ref_own ? "jouw prijs" : "")), p.unsure) || "—"}</td>
@@ -707,6 +727,126 @@
             <td class="num" data-l="jouw ref.">${typeof x.ref === "number" ? euro(x.ref) : "—"}</td></tr>`;
         }).join("")}</tbody></table>`
         : `<div class="empty"><h2>Nog geen prijshistorie</h2><p>Die bouwt de monitor vanzelf op zodra producten op voorraad komen.</p></div>`;
+    },
+  };
+
+
+  // =========================================================== VERZENDING
+  const V = { q: "", sort: "cost" };
+  VIEWS.verzending = {
+    built: false,
+    build() {
+      $("#view-verzending").innerHTML = `
+        <p class="note">Verzendkosten binnen Nederland (standaardpakket) en vanaf welk bedrag verzending gratis is, per shop.
+          Opgezocht op de sites zelf; staat er "onbekend", dan berekent de shop het pas bij het afrekenen.
+          Aanpassen kan in de monitor: tab Shops → Bewerken.</p>
+        <div class="filters" style="grid-template-columns:1fr auto">
+          <div><label for="v-q">zoeken</label><input type="search" id="v-q" placeholder="shop"></div>
+          <div><label for="v-sort">sorteren</label><select id="v-sort"><option value="cost">verzendkosten</option>
+            <option value="free">gratis vanaf</option><option value="name">shop</option></select></div>
+        </div>
+        <div class="toolbar"><span class="count" id="v-count"></span></div>
+        <div id="v-list"></div>`;
+      $("#v-q").addEventListener("input", (e) => { V.q = e.target.value; this.results(); });
+      $("#v-sort").addEventListener("change", (e) => { V.sort = e.target.value; this.results(); });
+      this.built = true;
+    },
+    render() { if (!this.built) this.build(); this.results(); },
+    results() {
+      const q = V.q.trim().toLowerCase();
+      const k = (x) => (typeof x === "number" ? x : 1e9);
+      const rows = (S.status?.shops || []).filter((s) => !q || s.name.toLowerCase().includes(q));
+      const sorts = { cost: (a, b) => k(a.ship_cost) - k(b.ship_cost) || k(a.ship_free) - k(b.ship_free),
+                      free: (a, b) => k(a.ship_free) - k(b.ship_free) || k(a.ship_cost) - k(b.ship_cost),
+                      name: (a, b) => a.name.localeCompare(b.name) };
+      rows.sort(sorts[V.sort] || sorts.cost);
+      const inStock = (name) => S.products.filter((p) => p.shop === name && p.stock === true).length;
+      $("#v-count").textContent = `${rows.length} shops · ${rows.filter((s) => typeof s.ship_cost === "number").length} met bekende verzendkosten`;
+      $("#v-list").innerHTML = rows.length ? `<table class="table"><thead><tr><th>shop</th><th class="num">verzendkosten</th>
+          <th class="num">gratis vanaf</th><th>opmerking</th><th class="num">nu op voorraad</th></tr></thead><tbody>
+        ${rows.map((s) => `<tr class="${s.enabled ? "" : "dim"}">
+          <td data-l=""><div class="ttl">${s.base ? `<a href="${esc(safeUrl(s.base))}" target="_blank" rel="noopener">${esc(s.name)}</a>` : esc(s.name)}
+            ${s.place && (S.status?.parts || []).length > 1 ? `<span class="badge">${esc(s.place)}</span>` : ""}${s.enabled ? "" : ` <span class="pill out">uit</span>`}</div></td>
+          <td class="num" data-l="verzendkosten">${typeof s.ship_cost === "number" ? `<b>${euro(s.ship_cost)}</b>` : `<span class="sub2" style="display:inline">onbekend</span>`}</td>
+          <td class="num" data-l="gratis vanaf">${typeof s.ship_free === "number" ? money(s.ship_free) : "—"}</td>
+          <td data-l="opmerking"><span class="sub2" style="display:inline;white-space:normal">${esc(s.ship_note || "")}</span></td>
+          <td class="num" data-l="op voorraad"><a href="#producten?stock=in&shops=${encodeURIComponent(s.name)}">${inStock(s.name)}</a></td></tr>`).join("")}
+        </tbody></table>${rows[0]?.ship_checked ? `<p class="note" style="margin-top:8px">Laatst opgezocht: ${esc(rows[0].ship_checked)}.</p>` : ""}`
+        : `<div class="empty"><h2>Nog geen shopgegevens</h2><p>Die komen mee met de volgende publicatie van de monitor (versie 4.35+).</p></div>`;
+    },
+  };
+
+  // =========================================================== LOGBOEK (live)
+  const LOG_KINDS = { melding: "melding", nieuw: "nieuw", uitverkocht: "uitverkocht", fout: "fout", hersteld: "hersteld",
+                      dubbel: "dubbel (genegeerd)", prijs: "prijs", info: "info" };
+  const LG = { q: "", src: "", kinds: [], limit: 200, pause: false };
+  async function loadLogs() {
+    const res = await Promise.allSettled(SRC.map((x) => getJSON("log.json", false, x.branch)));
+    const all = [];
+    res.forEach((r, i) => {
+      if (r.status !== "fulfilled") return;
+      const place = r.value.place || (SRC[i].status?.mode === "server" ? "server" : "laptop");
+      (r.value.items || []).forEach((x) => all.push(Object.assign({ src: place }, x)));
+    });
+    if (res.some((r) => r.status === "fulfilled")) {
+      S.logs = all.sort((a, b) => (b.t || "").localeCompare(a.t || ""));
+      S.logAt = Date.now();
+    }
+  }
+  VIEWS.logboek = {
+    built: false,
+    build() {
+      $("#view-logboek").innerHTML = `
+        <p class="note">Het logboek van de monitor op de server en op je laptop: meldingen, nieuwe producten, uitverkocht, fouten en
+          blokkades. De monitor stuurt het mee bij elke publicatie (elke paar minuten); deze pagina kijkt elke 30 seconden of er iets nieuws is.</p>
+        <button class="filter-toggle" data-for="l-filters">Filters <span class="n"></span></button>
+        <div class="filters collapsible" id="l-filters">
+          <div><label for="l-q">zoeken</label><input type="search" id="l-q" placeholder="bv. kingcards, 429"></div>
+          <div><label>bron</label><div class="seg" id="l-src"><button data-v="">alles</button><button data-v="server">server</button><button data-v="laptop">laptop</button></div></div>
+          <div class="wide"><label>soort</label><div class="chips" id="l-kinds">${Object.entries(LOG_KINDS).map(([k, t]) =>
+            `<span class="chip mini" data-k="${k}"><i class="lk ${k}"></i>${t}</span>`).join("")}</div></div>
+        </div>
+        <div class="toolbar"><span class="count" id="l-count"></span>
+          <div class="right"><span class="live" id="l-live"></span><button class="linkbtn" id="l-pause">pauzeren</button></div></div>
+        <div id="l-list" class="loglist"></div>`;
+      $("#l-q").addEventListener("input", (e) => { LG.q = e.target.value; LG.limit = 200; this.results(); });
+      $("#l-src").addEventListener("click", (e) => { const b = e.target.closest("button"); if (b) { LG.src = b.dataset.v; this.results(); } });
+      $("#l-kinds").addEventListener("click", (e) => {
+        const c = e.target.closest(".chip"); if (!c) return;
+        const k = c.dataset.k; LG.kinds = LG.kinds.includes(k) ? LG.kinds.filter((x) => x !== k) : [...LG.kinds, k]; this.results();
+      });
+      $("#l-pause").addEventListener("click", () => { LG.pause = !LG.pause; this.results(); });
+      $("#l-list").addEventListener("click", (e) => { if (e.target.classList.contains("more")) { LG.limit += 300; this.results(); } });
+      this.built = true;
+      setInterval(async () => {               // live: elke 30 s verversen zolang dit tabblad open is
+        if (route().tab !== "logboek" || LG.pause || document.hidden) return;
+        await loadLogs(); this.results();
+      }, 30000);
+    },
+    render() { if (!this.built) this.build(); this.results(); },
+    results() {
+      document.querySelectorAll("#l-src button").forEach((b) => b.classList.toggle("on", b.dataset.v === LG.src));
+      document.querySelectorAll("#l-kinds .chip").forEach((c) => c.classList.toggle("on", LG.kinds.includes(c.dataset.k)));
+      $("#l-pause").textContent = LG.pause ? "verder (live)" : "pauzeren";
+      $("#l-live").innerHTML = LG.pause ? "gepauzeerd" : `<i class="pulse-dot"></i>live · bijgewerkt ${S.logAt ? ago(S.logAt / 1000) : "—"}`;
+      const q = LG.q.trim().toLowerCase();
+      const rows = S.logs.filter((x) => (!LG.src || x.src === LG.src) && (!LG.kinds.length || LG.kinds.includes(x.k))
+        && (!q || (x.m || "").toLowerCase().includes(q)));
+      $("#l-count").textContent = `${rows.length} regels`;
+      activeCount("l-filters", [LG.q, LG.src, LG.kinds.length]);
+      let html = "", lastDay = "";
+      rows.slice(0, LG.limit).forEach((x) => {
+        const d = dayLabel(x.t);
+        if (d !== lastDay) { html += `<div class="day-sep"><span class="dag">${esc(d)}</span><span class="rule"></span></div>`; lastDay = d; }
+        const url = (x.m.match(/https?:\/\/\S+/) || [])[0];
+        const msg = esc(x.m.replace(/^\*\*\* /, "").replace(/https?:\/\/\S+/, "")).trim();
+        html += `<div class="logrow ${esc(x.k)}"><span class="lt">${new Date(x.t).toLocaleTimeString("nl-NL")}</span>
+          <span class="lsrc">${esc(x.src)}</span><span class="lkind"><i class="lk ${esc(x.k)}"></i>${esc(LOG_KINDS[x.k] || x.k)}</span>
+          <span class="lm">${msg}${url ? ` <a href="${esc(safeUrl(url))}" target="_blank" rel="noopener">→</a>` : ""}</span></div>`;
+      });
+      if (rows.length > LG.limit) html += `<button class="more">Meer tonen (${rows.length - LG.limit})</button>`;
+      $("#l-list").innerHTML = html || `<div class="empty"><h2>${S.logs.length ? "Niets gevonden" : "Nog geen logboek"}</h2><p>${S.logs.length
+        ? "Pas de filters aan." : "Het logboek komt mee met de volgende publicatie van de monitor (versie 4.35+)."}</p></div>`;
     },
   };
 

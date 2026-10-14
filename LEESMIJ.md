@@ -10,11 +10,16 @@ Dashboard voor de Pokémon-voorraadmonitor, op GitHub Pages (net als John's Ball
   datum en link, naast de goedkoopste aanbieding die de sniper nu op voorraad ziet en de laagste prijs ooit.
   Filters op set, kleur (🟢 t/m +5% · 🟠 tot +35% · 🔴 daarboven), alleen op voorraad en alleen betrouwbare prijzen.
 - **Laagste prijzen**: de laagste prijs ooit per product (shop + datum), naast de goedkoopste aanbieding van nu
+- **Verzending**: verzendkosten binnen NL en de grens voor gratis verzending per shop (aanpassen in de monitor:
+  Shops → Bewerken). Bij Meldingen en Producten staan de verzendkosten achter de shopnaam.
+- **Logboek**: het logboek van server én laptop, live (elke 30 s), met filters op soort (melding, nieuw,
+  uitverkocht, fout, hersteld, dubbel genegeerd, prijs) en bron.
+- Bij elke melding staat nu ook of het product **nu** nog op voorraad is.
 
 ## Zo werkt het
 
 De monitor op je Mac (of de server) zet elke paar minuten vijf bestanden (`status.json`, `products.json`, `alerts.json`,
-`history.json`, `refs.json`) op een aparte tak **`data`** van deze repository. De website leest ze daar.
+`history.json`, `refs.json`, `log.json`) op een aparte tak **`data`** van deze repository. De website leest ze daar.
 Die tak bevat altijd alleen de laatste stand, dus de repository groeit niet.
 
 ## Eenmalig instellen (± 10 minuten)
